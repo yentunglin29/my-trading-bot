@@ -545,7 +545,7 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             # ==========================================
             st.markdown("---")
             st.subheader("🤖 自動停利設定 (Auto Take Profit)")
-            st.caption("設定好目標後，系統會送出永久有效單 (GTC)，**你可以關掉網頁去睡覺**，達標自動賣出。")
+            st.caption("設定好目標後，系統會送出單，達標自動賣出。")
             
             c1, c2, c3 = st.columns([2, 1, 1])
             with c1:
@@ -579,7 +579,6 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             if st.button(f"🚀 啟動自動停利 (Set & Forget)", type="primary"):
                 with st.spinner("設定中..."):
                     try:
-                        # 🔥 關鍵：送出 GTC (Good Till Canceled) 的 Limit Sell Order
                         # 這種單子會一直掛在 Alpaca 伺服器上，直到成交或你取消，不用開電腦
                         api.submit_order(
                             symbol=target_symbol,
@@ -587,7 +586,7 @@ elif page_mode == "💼 我的資產 (Portfolio)":
                             side='sell',
                             type='limit',
                             limit_price=target_price,
-                            time_in_force='gtc' # <--- 重點：GTC 代表永久有效
+                            time_in_force='day'
                         )
                         st.success(f"✅ 設定成功！已掛出賣單 @ ${target_price:.2f}。")
                         st.balloons()
