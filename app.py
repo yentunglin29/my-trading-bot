@@ -457,11 +457,14 @@ elif page_mode == "💰 期權策略 (Options)":
                 st.error(f"Error: {e}")
 
 # -----------------------------------------------
-# 🆎 模式三：我的資產 (Portfolio)
+# 🆎 模式三：我的資產 (Portfolio) - 含智慧自動賣出
 # -----------------------------------------------
 elif page_mode == "💼 我的資產 (Portfolio)":
-    st.title("💼 我的資產總覽")
+    st.title("💼 我的資產總覽 (Portfolio)")
+    
     api = trading.get_api()
+    
+    # 1. 資金看板
     try:
         account = api.get_account()
         daily_pl = float(account.equity) - float(account.last_equity)
@@ -476,32 +479,126 @@ elif page_mode == "💼 我的資產 (Portfolio)":
         
         st.divider()
 
+        # 2. 訂單管理 (這裡很重要，可以看到你的自動單)
         st.subheader("📋 訂單管理 (Orders)")
         open_orders = api.list_orders(status='open')
-        with st.expander("⏳ 掛單中 (Open Orders)", expanded=True):
+        with st.expander("⏳ 掛單中 (已預約的自動賣單)", expanded=True):
             if open_orders:
-                o_data = [{"Symbol": o.symbol, "Side": o.side, "Qty": o.qty, "Price": o.limit_price, "Status": o.status} for o in open_orders]
-                st.dataframe(pd.DataFrame(o_data), hide_index=True)
-                if st.button("❌ 取消所有掛單"):
+                o_data = []
+                for o in open_orders:
+                    # 嘗試計算這張單是為了停利多少%
+                    # 這需要知道持倉成本，這裡先簡單顯示
+                    side_str = "🟢 買入" if o.side == 'buy' else "🔴 賣出"
+                    limit_price = float(o.limit_price) if o.limit_price else 0
+                    o_data.append({
+                        "代碼": o.symbol,
+                        "方向": side_str,
+                        "數量": int(o.qty),
+                        "目標價 (Limit)": f"${limit_price:.2f}",
+                        "狀態": o.status, # held 代表夜間掛單，new/accepted 代表盤中
+                        "有效期": o.time_in_force # gtc 代表永久有效
+                    })
+                st.dataframe(pd.DataFrame(o_data), hide_index=True, use_container_width=True)
+                
+                if st.button("❌ 取消所有掛單 (重設策略)"):
                     api.cancel_all_orders()
+                    st.success("已取消所有掛單！")
+                    time.sleep(1)
                     st.rerun()
             else:
-                st.info("無掛單")
+                st.info("目前沒有掛單。")
 
-        with st.expander("✅ 最近成交 (Filled)", expanded=False):
-            closed_orders = api.list_orders(status='closed', limit=10)
-            if closed_orders:
-                c_data = [{"Symbol": o.symbol, "Side": o.side, "Qty": o.filled_qty, "Price": o.filled_avg_price, "Time": o.filled_at} for o in closed_orders if o.filled_at]
-                st.dataframe(pd.DataFrame(c_data), hide_index=True)
-
+        # 3. 持倉列表
         st.divider()
-        st.subheader("📊 目前持倉")
+        st.subheader("📊 目前持倉 (Current Positions)")
         positions = api.list_positions()
+        
         if positions:
-            pos_data = [{"Symbol": p.symbol, "Qty": p.qty, "Cost": float(p.avg_entry_price), "Price": float(p.current_price), "P/L": float(p.unrealized_pl)} for p in positions]
-            st.dataframe(pd.DataFrame(pos_data), hide_index=True)
+            # 準備下拉選單的資料
+            sell_options = []
+            
+            pos_data = []
+            for p in positions:
+                is_option = len(p.symbol) > 6 and any(c.isdigit() for c in p.symbol)
+                sell_options.append(f"{p.symbol}")
+                
+                pos_data.append({
+                    "代碼": p.symbol,
+                    "類型": "期權" if is_option else "股票",
+                    "數量": int(p.qty),
+                    "成本": float(p.avg_entry_price),
+                    "現價": float(p.current_price),
+                    "損益 ($)": float(p.unrealized_pl),
+                    "報酬率 (%)": float(p.unrealized_plpc) * 100
+                })
+            
+            st.dataframe(
+                pd.DataFrame(pos_data).style.format({
+                    "成本": "${:.2f}", "現價": "${:.2f}", 
+                    "損益 ($)": "${:+.2f}", "報酬率 (%)": "{:+.2f}%"
+                }).applymap(lambda x: 'color: green' if x > 0 else 'color: red', subset=['損益 ($)', '報酬率 (%)']),
+                use_container_width=True
+            )
+
+            # ==========================================
+            # 🔥🔥🔥 4. 機器人：自動出場設定 (Auto Exit) 🔥🔥🔥
+            # ==========================================
+            st.markdown("---")
+            st.subheader("🤖 自動停利設定 (Auto Take Profit)")
+            st.caption("設定好目標後，系統會送出永久有效單 (GTC)，**你可以關掉網頁去睡覺**，達標自動賣出。")
+            
+            c1, c2, c3 = st.columns([2, 1, 1])
+            with c1:
+                target_symbol = st.selectbox("📦 選擇持倉", [p.symbol for p in positions])
+            
+            # 找出選中持倉的成本
+            target_pos = next(p for p in positions if p.symbol == target_symbol)
+            avg_cost = float(target_pos.avg_entry_price)
+            current_qty = int(target_pos.qty)
+
+            with c2:
+                # 選擇獲利目標 %
+                profit_target = st.select_slider(
+                    "🎯 獲利目標 (Take Profit)", 
+                    options=[10, 20, 30, 50, 100, 200], 
+                    value=30,
+                    format_func=lambda x: f"+{x}%"
+                )
+            
+            with c3:
+                qty_to_sell = st.number_input("賣出數量", min_value=1, max_value=current_qty, value=current_qty)
+
+            # 計算目標價格
+            target_price = avg_cost * (1 + profit_target/100)
+            
+            # 期權價格通常有最小跳動單位 (0.01 或 0.05)，這裡簡單取小數點兩位
+            target_price = round(target_price, 2)
+            
+            st.info(f"💡 策略邏輯：當 **{target_symbol}** 從成本 `${avg_cost:.2f}` 漲到 **`${target_price:.2f}`** (+{profit_target}%) 時，自動賣出 {qty_to_sell} 張。")
+
+            if st.button(f"🚀 啟動自動停利 (Set & Forget)", type="primary"):
+                with st.spinner("設定中..."):
+                    try:
+                        # 🔥 關鍵：送出 GTC (Good Till Canceled) 的 Limit Sell Order
+                        # 這種單子會一直掛在 Alpaca 伺服器上，直到成交或你取消，不用開電腦
+                        api.submit_order(
+                            symbol=target_symbol,
+                            qty=qty_to_sell,
+                            side='sell',
+                            type='limit',
+                            limit_price=target_price,
+                            time_in_force='gtc' # <--- 重點：GTC 代表永久有效
+                        )
+                        st.success(f"✅ 設定成功！已掛出賣單 @ ${target_price:.2f}。")
+                        st.balloons()
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 設定失敗: {e}")
+                        st.caption("提示：如果該標的已有其他掛單，請先到上方『取消所有掛單』再重新設定。")
+
         else:
-            st.info("目前空手")
+            st.info("📭 目前空手，無可設定的資產。")
 
     except Exception as e:
-        st.error(f"讀取失敗: {e}")
+        st.error(f"讀取帳戶資料失敗: {e}")
