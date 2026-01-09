@@ -14,8 +14,34 @@ import json
 import os
 import yfinance as yf
 
-# ================= 1. 初始化與設定 =================
 st.set_page_config(page_title="AlgoTrading 戰情室", layout="wide", page_icon="📈")
+
+# ================= 🔐 安全登入檢查 (Security Check) =================
+def check_password():
+    """如果不對，回傳 False；如果對了，回傳 True"""
+    # 如果已經登入過，直接放行
+    if st.session_state.get('password_correct', False):
+        return True
+
+    # 顯示密碼輸入框
+    st.title("🔒 請登入 (Login Required)")
+    password = st.text_input("請輸入存取密碼", type="password")
+    
+    if st.button("登入"):
+        # 比對 Secrets 裡的密碼
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state['password_correct'] = True
+            st.rerun()  # 密碼對了，重新整理畫面
+        else:
+            st.error("❌ 密碼錯誤")
+    
+    return False
+
+# 🔥 如果密碼檢查沒通過，就直接在這裡「停住」，不執行後面的程式
+if not check_password():
+    st.stop()  # ⛔ 程式到此為止，駭客看不到後面的東西
+
+# ================= 1. 初始化與設定 =================
 
 # 這裡不再需要 Ngrok 的設定代碼
 

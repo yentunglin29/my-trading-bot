@@ -2,13 +2,26 @@
 import requests
 import json
 import streamlit as st
-import config
 from i18n import t
+
+# 嘗試匯入 config，如果沒有也沒關係 (雲端環境可能沒有 config.py)
+try:
+    import config
+except ImportError:
+    config = None
 
 @st.cache_data(ttl=600)
 def call_gemini_analysis(symbol, full_name, news_text, tech_status, rsi_val, lang):
-    if not config.GEMINI_API_KEY:
-        return "⚠️ Please set API Key first.", "gray", []
+    api_key = None
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except:
+        if config and hasattr(config, 'GEMINI_API_KEY'):
+            api_key = config.GEMINI_API_KEY
+
+    # 如果都找不到 Key，就報錯
+    if not api_key:
+        return "⚠️ Please set GEMINI_API_KEY in Secrets or config.py", "gray", []
     
     candidate_models = ["gemini-2.0-flash", "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash-exp"]
     
@@ -17,7 +30,7 @@ def call_gemini_analysis(symbol, full_name, news_text, tech_status, rsi_val, lan
     【技術面數據】趨勢：{tech_status}, RSI：{rsi_val}
     【新聞】{news_text}
     【要求】用繁體中文(台灣用語)回答。直接給三行：
-    1. 中立客觀情緒
+    1. 中立客觀情緒 (例如：樂觀/悲觀/謹慎/誘多)
     2. 分析摘要(100字，白話解釋，若技術面空頭但新聞好請警告誘多)
     3. 關鍵字(3-5個英文單字，逗號隔開)
     """
@@ -38,7 +51,8 @@ def call_gemini_analysis(symbol, full_name, news_text, tech_status, rsi_val, lan
     headers = {'Content-Type': 'application/json'}
 
     for model_name in candidate_models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={config.GEMINI_API_KEY.strip()}"
+        # 🔥 修改重點 2：使用變數 api_key，而不是 config.GEMINI_API_KEY
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key.strip()}"
         try:
             response = requests.post(url, headers=headers, data=json.dumps(payload))
             if response.status_code == 200:
@@ -48,7 +62,7 @@ def call_gemini_analysis(symbol, full_name, news_text, tech_status, rsi_val, lan
                 except: continue
         except: continue
             
-    return "⚠️ Gemini Connection Failed.", "gray", []
+    return "⚠️ Gemini Connection Failed (Check API Key or Quota).", "gray", []
 
 def generate_ai_report(symbol, full_name, news_list, df):
     lang = st.session_state.get('language', 'zh')
@@ -76,7 +90,7 @@ def generate_ai_report(symbol, full_name, news_list, df):
         color = "info"
         if any(x in mood_line for x in ["樂觀", "Optimistic"]): color = "success"
         elif any(x in mood_line for x in ["悲觀", "Pessimistic"]): color = "error"
-        elif any(x in mood_line for x in ["矛盾", "陷阱", "Trap"]): color = "warning"
+        elif any(x in mood_line for x in ["矛盾", "陷阱", "Trap", "謹慎"]): color = "warning"
 
         summary = lines[1].replace("分析摘要：", "").replace("Summary:", "").replace("2. ", "").strip()
         keywords_str = lines[2].replace("關鍵字：", "").replace("Keywords:", "").replace("3. ", "").strip()
