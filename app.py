@@ -819,115 +819,154 @@ elif page_mode == "📝 交易紀錄 (Log)":
         st.info("📭 目前沒有相關的訂單紀錄。")
 
 # ========================================================
-# 定時自動掛機 (Auto-Pilot) - V2 修正版 (修復夜間偷跑問題)
+# 定時自動掛機 (Auto-Pilot) - V3 防斷線終極版
 # ========================================================
 elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
     st.title("⏰ 全自動掛機模式 (Sleep & Trade)")
     st.markdown("""
-    **功能說明**：此模式專為**時差黨**設計。你可以在睡前設定好，程式會自動等待到指定時間執行。
-    
-    ⚠️ **注意**：
-    1. 請確保電腦**不要休眠** (或設定螢幕常亮)。
-    2. 請保持此網頁分頁**開啟**。
+    **防斷線機制 (Auto-Resume)**：此版本會將設定存檔。即使網頁不小心重新整理，系統也會在 5 秒後自動恢復掛機。
     """)
     
     import datetime
-    import pytz # 需要處理時區
+    import pytz
+    import json
     
     api = trading.get_api()
+    STATE_FILE = "bot_state.json"
 
+    # --- 函數：存取狀態 ---
+    def save_state(running, symbol, time_str, budget, min_p, max_p, trend):
+        with open(STATE_FILE, "w") as f:
+            json.dump({
+                "running": running,
+                "symbol": symbol,
+                "time": time_str,
+                "budget": budget,
+                "min": min_p,
+                "max": max_p,
+                "trend": trend
+            }, f)
+
+    def load_state():
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, "r") as f:
+                    return json.load(f)
+            except: pass
+        return None
+
+    # 讀取上次的設定 (如果有)
+    state = load_state()
+    default_running = state["running"] if state else False
+    
     # --- 1. 策略設定 (Setup) ---
     st.subheader("1️⃣ 策略設定 (Setup)")
     
-    # 動態讀取 Watchlist
+    # 預設值優先使用「存檔的紀錄」，沒有才用預設值
     my_options = st.session_state.watchlist if st.session_state.watchlist else ["AMD", "PLTR"]
-    
+    def_idx = 0
+    if state and state["symbol"] in my_options:
+        def_idx = my_options.index(state["symbol"])
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        target_symbol = st.selectbox("目標股票 (從監控清單)", my_options, index=0)
+        target_symbol = st.selectbox("目標股票", my_options, index=def_idx)
     with c2:
-        target_time_str = st.text_input("執行時間 (美東 ET)", value="09:45")
+        target_time_str = st.text_input("執行時間 (美東 ET)", value=state["time"] if state else "09:45")
     with c3:
-        trend_filter = st.checkbox("✅ 只做多頭 (股價 > 開盤價)", value=True)
+        trend_filter = st.checkbox("✅ 只做多頭", value=state["trend"] if state else True)
 
-    # --- 資金與價格設定 ---
     st.write("---")
-    st.subheader("💰 資金管理 (Money Management)")
+    st.subheader("💰 資金管理")
     
     cm1, cm2, cm3 = st.columns(3)
     with cm1:
-        total_budget = st.number_input("本筆交易總預算 ($)", value=500, step=100)
+        total_budget = st.number_input("總預算 ($)", value=state["budget"] if state else 500, step=100)
     with cm2:
-        min_ask = st.number_input("期權 Ask 最小價 ($)", value=1.50)
+        min_ask = st.number_input("Ask 最小 ($)", value=state["min"] if state else 1.50)
     with cm3:
-        max_ask = st.number_input("期權 Ask 最大價 ($)", value=2.50)
-        
-    st.caption(f"💡 說明：程式會根據預算自動計算張數。例如預算 ${total_budget} 且期權價格 $2.00，程式會買入 {int(total_budget/200)} 張。")
+        max_ask = st.number_input("Ask 最大 ($)", value=state["max"] if state else 2.50)
 
-    # --- 2. 啟動掛機 (Arm System) ---
     st.divider()
+
+    # --- 邏輯核心：防斷線啟動 ---
     
-    if st.button("🔴 啟動掛機系統 (Start Auto-Pilot)", type="primary"):
+    # 變數：決定是否要執行 Loop
+    should_run = False
+    
+    # 情況 A: 使用者剛按下啟動
+    if st.button("🔴 啟動掛機系統 (Start)", type="primary"):
+        save_state(True, target_symbol, target_time_str, total_budget, min_ask, max_ask, trend_filter)
+        st.rerun() # 強制刷新以進入狀態
+    
+    # 情況 B: 系統發現「上次是啟動狀態」 (可能是網頁重整了)
+    elif default_running:
+        st.warning("⚠️ 檢測到系統之前正在掛機 (可能是網頁剛重整)...")
+        
+        # 給使用者 5 秒鐘後悔的機會 (避免無限死循環)
+        stop_col1, stop_col2 = st.columns([4, 1])
+        with stop_col1:
+            st.info("系統將在 **5 秒後** 自動恢復掛機監控...")
+        with stop_col2:
+            if st.button("🛑 取消掛機 (Stop)"):
+                save_state(False, target_symbol, target_time_str, total_budget, min_ask, max_ask, trend_filter)
+                st.success("已停止！")
+                time.sleep(1)
+                st.rerun()
+                
+        # 倒數 5 秒
+        time.sleep(5)
+        # 如果沒按取消，就繼續執行
+        should_run = True
+
+    # --- 正式進入掛機迴圈 ---
+    if should_run:
         status_placeholder = st.empty()
         log_placeholder = st.empty()
         
-        # 定義時區
+        # 為了避免 UI 卡死無法操作，這裡顯示一個提示
+        st.caption("💡 程式運行中。如需停止，請 **直接切換到側邊欄的其他頁面** 即可強行中斷。")
+        
         tz_et = pytz.timezone('US/Eastern')
         now_et = datetime.datetime.now(tz_et)
         
-        # ==========================================
-        # 🔥 V2 修正重點：智慧判斷日期
-        # ==========================================
+        # 時間解析邏輯 (同 V2)
         try:
-            # 1. 解析你輸入的時間 (例如 09:45)
             t_hour, t_minute = map(int, target_time_str.split(':'))
-            
-            # 2. 建立一個「今天 09:45」的時間物件
             target_dt = now_et.replace(hour=t_hour, minute=t_minute, second=0, microsecond=0)
-            
-            # 3. 關鍵判斷：如果「現在」已經超過「今天 09:45」，那你的意思一定是「明天」
             if now_et > target_dt:
-                target_dt += datetime.timedelta(days=1) # 加一天
+                target_dt += datetime.timedelta(days=1)
                 
-            log_txt = f"🚀 系統啟動！目標鎖定：{target_symbol}\n"
-            log_txt += f"⏰ 預計執行時間：{target_dt.strftime('%Y-%m-%d %H:%M:%S')} (美東時間)\n"
-            log_txt += f"💤 目前進入待機模式，請勿關閉網頁...\n"
+            log_txt = f"🚀 [自動恢復] 系統啟動！目標：{target_symbol}\n"
+            log_txt += f"⏰ 鎖定時間：{target_dt.strftime('%Y-%m-%d %H:%M:%S')} ET\n"
             log_placeholder.text_area("系統日誌", log_txt, height=200)
             
-            # 循環檢測
+            # --- 無限迴圈 (直到任務完成或切換頁面) ---
             while True:
                 now = datetime.datetime.now(tz_et)
                 remaining = target_dt - now
                 
-                # 顯示漂亮的倒數計時
                 if remaining.total_seconds() > 0:
-                    status_placeholder.info(f"⏳ 倒數計時: {str(remaining).split('.')[0]} | 等待 {target_dt.strftime('%H:%M')} 開跑...")
+                    status_placeholder.info(f"⏳ 監控中 | 倒數: {str(remaining).split('.')[0]} (網頁重整也能自動回來)")
                 else:
-                    # 時間到了！
-                    log_txt += f"\n✅ 時間到達 ({now.strftime('%H:%M:%S')})！開始執行策略...\n"
+                    # 時間到，執行策略 (同 V2)
+                    log_txt += f"\n✅ 時間到達！開始執行...\n"
                     log_placeholder.text_area("系統日誌", log_txt, height=200)
-                    status_placeholder.text("⚡ 正在執行中...")
+                    status_placeholder.text("⚡ 執行中...")
                     
                     try:
-                        # [Step A] 檢查趨勢
+                        # [Step A] 趨勢
                         if trend_filter:
                             bar = api.get_latest_bar(target_symbol)
-                            current_stock_price = bar.c
-                            open_stock_price = bar.o
-                            
-                            log_txt += f"🔍 檢查趨勢: 現價 ${current_stock_price} vs 開盤 ${open_stock_price}...\n"
-                            if current_stock_price < open_stock_price:
-                                log_txt += "❌ 趨勢不符 (股價下跌中)，取消交易。今日休息。\n"
+                            if bar.c < bar.o:
+                                log_txt += f"❌ 趨勢下跌 (${bar.c} < ${bar.o})，取消交易。\n"
                                 log_placeholder.text_area("系統日誌", log_txt, height=200)
-                                status_placeholder.error("⛔ 策略終止：趨勢下跌。")
+                                # 任務結束，修改存檔狀態為 False
+                                save_state(False, target_symbol, target_time_str, total_budget, min_ask, max_ask, trend_filter)
                                 break
-                            else:
-                                log_txt += "✅ 趨勢符合 (多頭排列)！繼續執行...\n"
-                    
-                        # [Step B] 掃描期權
-                        log_txt += f"🔍 掃描 {target_symbol} 期權鏈 (Ask: ${min_ask}-${max_ask})...\n"
-                        log_placeholder.text_area("系統日誌", log_txt, height=200)
-                        
+                            log_txt += "✅ 趨勢符合 (多頭)。\n"
+
+                        # [Step B] 掃描
                         tk = yf.Ticker(target_symbol)
                         exps = tk.options
                         found_contract = None
@@ -941,47 +980,31 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
                                 best_row = candidates.sort_values('volume', ascending=False).iloc[0]
                                 found_contract = best_row['contractSymbol']
                                 est_price = best_row['ask']
-                                log_txt += f"✅ 找到合約: {found_contract} (Ask: ${est_price})\n"
                         
                         if not found_contract:
-                            log_txt += "❌ 找不到符合條件的合約。策略結束。\n"
+                            log_txt += "❌ 找不到合約。\n"
                             log_placeholder.text_area("系統日誌", log_txt, height=200)
-                            status_placeholder.warning("找不到合約")
+                            save_state(False, target_symbol, target_time_str, total_budget, min_ask, max_ask, trend_filter)
                             break
 
-                        # [Step C] 資金運算
-                        cost_per_contract = est_price * 100
-                        qty_to_buy = int(total_budget // cost_per_contract)
-                        if qty_to_buy % 2 != 0: qty_to_buy -= 1 # 偶數調整
-                        
-                        if qty_to_buy < 2:
-                            log_txt += f"❌ 預算不足買 2 張 (單張 ${cost_per_contract})。\n"
-                            log_placeholder.text_area("系統日誌", log_txt, height=200)
-                            status_placeholder.error("預算不足")
-                            break
-                        
-                        qty_to_sell_half = int(qty_to_buy / 2)
-
-                        # [Step D] 下單買入
+                        # [Step C] 下單
                         limit_buy = round(est_price + 0.05, 2)
-                        log_txt += f"🛒 送出買單: {qty_to_buy} 張 @ Limit ${limit_buy}...\n"
+                        cost_per = est_price * 100
+                        qty = int(total_budget // cost_per)
+                        if qty % 2 != 0: qty -= 1
+                        
+                        if qty < 2:
+                            log_txt += "❌ 預算不足。\n"
+                            break
+                        
+                        buy_order = api.submit_order(symbol=found_contract, qty=qty, side='buy', type='limit', limit_price=limit_buy, time_in_force='day')
+                        
+                        # [Step D] 等待成交
+                        log_txt += "⏳ 等待成交...\n"
                         log_placeholder.text_area("系統日誌", log_txt, height=200)
-                        
-                        buy_order = api.submit_order(
-                            symbol=found_contract,
-                            qty=qty_to_buy,
-                            side='buy',
-                            type='limit',
-                            limit_price=limit_buy,
-                            time_in_force='day'
-                        )
-                        
-                        # [Step E] 等待成交
-                        log_txt += "⏳ 等待成交中...\n"
                         filled = False
                         filled_price = 0
-                        
-                        for _ in range(12): # 等 60 秒
+                        for _ in range(12):
                             time.sleep(5)
                             o = api.get_order(buy_order.id)
                             if o.status == 'filled':
@@ -990,35 +1013,28 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
                                 break
                         
                         if filled:
-                            log_txt += f"✅ 成交確認！均價 ${filled_price}\n"
                             target_sell = round(filled_price * 2.0, 2)
-                            log_txt += f"🔒 掛出保本賣單: {qty_to_sell_half} 張 @ ${target_sell} (GTC)...\n"
-                            
-                            api.submit_order(
-                                symbol=found_contract,
-                                qty=qty_to_sell_half,
-                                side='sell',
-                                type='limit',
-                                limit_price=target_sell,
-                                time_in_force='gtc'
-                            )
-                            log_txt += "🎉 策略執行完畢！早安！\n"
-                            status_placeholder.success(f"任務完成！買入 {qty_to_buy} 張 / 賣單掛 {qty_to_sell_half} 張")
+                            api.submit_order(symbol=found_contract, qty=int(qty/2), side='sell', type='limit', limit_price=target_sell, time_in_force='gtc')
+                            log_txt += f"🎉 任務完成！掛賣 ${target_sell}\n"
+                            status_placeholder.success("執行完畢！")
                             st.balloons()
                         else:
-                            log_txt += "⚠️ 超時未成交，已取消訂單。\n"
                             api.cancel_order(buy_order.id)
-                            status_placeholder.warning("未成交")
-                        
+                            log_txt += "⚠️ 未成交已取消。\n"
+                            
                         log_placeholder.text_area("系統日誌", log_txt, height=200)
-                        break 
+                        
+                        # 任務結束，停止掛機狀態
+                        save_state(False, target_symbol, target_time_str, total_budget, min_ask, max_ask, trend_filter)
+                        break
 
                     except Exception as e:
-                        log_txt += f"❌ 發生錯誤: {e}\n"
+                        log_txt += f"❌ 錯誤: {e}\n"
                         log_placeholder.text_area("系統日誌", log_txt, height=200)
+                        save_state(False, target_symbol, target_time_str, total_budget, min_ask, max_ask, trend_filter)
                         break
                 
-                time.sleep(1) # 每秒檢查一次
+                time.sleep(1)
 
         except Exception as e:
-            st.error(f"時間設定格式錯誤或系統異常: {e}")
+            st.error(f"系統錯誤: {e}")
