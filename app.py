@@ -1,12 +1,10 @@
 # app.py
-# 這是主程式，請執行: streamlit run app.py
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
-# import config # 雲端版不需要 config，改用 trading.py 裡的 secrets
 from i18n import t
 import trading
 import brain
@@ -84,6 +82,7 @@ with st.sidebar:
         "💰 期權策略 (Options)", 
         "⚡ 實戰策略 (Strategy)", 
         "⏰ 定時自動掛機 (Auto-Pilot)", 
+        "🧪 回測實驗室 (Backtest)",
         "💼 我的資產 (Portfolio)",
         "📝 交易紀錄 (Log)"
     ], index=3)
@@ -1041,3 +1040,179 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
 
         except Exception as e:
             st.error(f"系統錯誤: {e}")
+
+# ========================================================
+# 🧪 回測實驗室 (Backtest Lab)
+# ========================================================
+elif page_mode == "🧪 回測實驗室 (Backtest)":
+    st.title("🧪 策略回測實驗室 (Backtest Lab)")
+    st.markdown("""
+    **功能說明**：運用歷史數據驗證你的策略。
+    
+    這裡我們回測最經典的 **「趨勢跟隨 + RSI 濾網」** 策略，這是大多數量化策略的基石。
+    * **買入訊號**：當股價站上短期均線 (SMA Short) 且 RSI 未過熱。
+    * **賣出訊號**：當股價跌破長期均線 (SMA Long) 或 RSI 過高 (止盈)。
+    """)
+
+    # --- 1. 回測參數設定 ---
+    st.sidebar.header("⚙️ 回測參數")
+    
+    # 標的與時間
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        backtest_symbol = st.selectbox("回測標的", ["NVDA", "TSLA", "PLTR", "AMD", "AAPL", "SPY", "QQQ"], index=0)
+    with bc2:
+        initial_capital = st.number_input("初始資金 ($)", value=10000, step=1000)
+
+    # 策略參數
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        sma_short = st.number_input("短期均線 (進場)", value=20, min_value=5)
+    with c2:
+        sma_long = st.number_input("長期均線 (出場)", value=50, min_value=10)
+    with c3:
+        rsi_buy_max = st.number_input("RSI 上限 (買入濾網)", value=70, help="RSI 高於此值不買 (避免追高)")
+    with c4:
+        stop_loss_pct = st.number_input("停損 (%)", value=10.0, step=1.0) / 100
+
+    days_back = st.slider("回測天數 (Days Lookback)", 100, 1000, 365)
+
+    # --- 2. 執行回測 ---
+    if st.button("🚀 開始回測 (Run Backtest)", type="primary"):
+        status_text = st.empty()
+        status_text.text("正在下載歷史數據...")
+        
+        try:
+            # 下載數據
+            df = trading.get_market_data(trading.get_api(), backtest_symbol, days=days_back+50) # 多抓一點算SMA
+            
+            if df.empty:
+                st.error("❌ 無法獲取數據，請檢查標的或網絡。")
+            else:
+                status_text.text("計算技術指標...")
+                
+                # 計算策略指標
+                df['SMA_S'] = df['close'].rolling(window=sma_short).mean()
+                df['SMA_L'] = df['close'].rolling(window=sma_long).mean()
+                # RSI 已經在 get_market_data 裡算好了，直接用 df['RSI']
+                
+                # 初始化回測變數
+                cash = initial_capital
+                position = 0 # 持股數量
+                equity_curve = []
+                trade_log = []
+                entry_price = 0
+                
+                # 開始逐日模擬 (從資料足夠那天開始)
+                start_idx = max(sma_long, 50) 
+                
+                status_text.text("正在逐日模擬交易...")
+                
+                for i in range(start_idx, len(df)):
+                    today = df.iloc[i]
+                    prev = df.iloc[i-1]
+                    date = df.index[i].strftime('%Y-%m-%d')
+                    price = today['close']
+                    
+                    action = "HOLD"
+                    
+                    # --- 賣出邏輯 (Sell Logic) ---
+                    if position > 0:
+                        # 1. 跌破長期均線 -> 趨勢反轉，賣出
+                        if price < today['SMA_L']:
+                            reason = f"跌破 SMA{sma_long}"
+                            action = "SELL"
+                        # 2. 停損 (Stop Loss)
+                        elif price < entry_price * (1 - stop_loss_pct):
+                            reason = f"觸發停損 (-{stop_loss_pct*100}%)"
+                            action = "SELL"
+                        
+                        if action == "SELL":
+                            cash += position * price
+                            profit = (price - entry_price) * position
+                            profit_pct = (price / entry_price) - 1
+                            trade_log.append({
+                                "日期": date, "動作": "🔴 賣出", "價格": price, 
+                                "數量": position, "損益": profit, "報酬率": f"{profit_pct*100:.1f}%", "原因": reason
+                            })
+                            position = 0
+                            entry_price = 0
+
+                    # --- 買入邏輯 (Buy Logic) ---
+                    elif position == 0:
+                        # 策略：收盤價站上 短期均線 且 RSI 沒有過熱
+                        if price > today['SMA_S'] and today['RSI'] < rsi_buy_max:
+                            # 全倉買入 (模擬)
+                            position = int(cash / price)
+                            if position > 0:
+                                cost = position * price
+                                cash -= cost
+                                entry_price = price
+                                trade_log.append({
+                                    "日期": date, "動作": "🔵 買入", "價格": price, 
+                                    "數量": position, "損益": 0, "報酬率": "-", "原因": f"站上 SMA{sma_short}"
+                                })
+
+                    # 紀錄當日總資產
+                    total_value = cash + (position * price)
+                    equity_curve.append({"Date": df.index[i], "Equity": total_value})
+
+                status_text.empty()
+                
+                # --- 3. 顯示結果報告 ---
+                if not equity_curve:
+                    st.warning("在此期間內沒有觸發任何交易。")
+                else:
+                    df_eq = pd.DataFrame(equity_curve).set_index("Date")
+                    final_value = df_eq.iloc[-1]['Equity']
+                    total_return = (final_value - initial_capital) / initial_capital
+                    
+                    # 計算買入持有 (Buy & Hold) 的績效作為對比
+                    start_price = df.iloc[start_idx]['close']
+                    end_price = df.iloc[-1]['close']
+                    bh_return = (end_price - start_price) / start_price
+                    
+                    # 顯示 KPI
+                    st.subheader("📊 回測績效報告")
+                    k1, k2, k3, k4 = st.columns(4)
+                    k1.metric("最終資產", f"${final_value:,.0f}")
+                    k2.metric("策略報酬率", f"{total_return*100:.1f}%", 
+                              delta=f"{(total_return - bh_return)*100:.1f}% vs Buy&Hold",
+                              help="綠色代表戰勝大盤(買入持有)，紅色代表輸給大盤")
+                    k3.metric("交易次數", f"{len([t for t in trade_log if t['動作']=='🔴 賣出'])}")
+                    
+                    # 勝率計算
+                    wins = [t for t in trade_log if t['動作']=='🔴 賣出' and t['損益'] > 0]
+                    total_trades = len([t for t in trade_log if t['動作']=='🔴 賣出'])
+                    win_rate = len(wins) / total_trades if total_trades > 0 else 0
+                    k4.metric("勝率 (Win Rate)", f"{win_rate*100:.0f}%")
+
+                    # 繪製權益曲線
+                    st.subheader("📈 資產成長曲線 (Equity Curve)")
+                    
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # 策略曲線
+                    fig.add_trace(go.Scatter(
+                        x=df_eq.index, y=df_eq['Equity'], 
+                        name="策略回報 (Strategy)", line=dict(color='green', width=2)
+                    ), secondary_y=False)
+                    
+                    # 股價曲線 (對照用)
+                    df_bench = df.iloc[start_idx:].copy()
+                    fig.add_trace(go.Scatter(
+                        x=df_bench.index, y=df_bench['close'], 
+                        name=f"{backtest_symbol} 股價", line=dict(color='gray', dash='dot')
+                    ), secondary_y=True)
+                    
+                    fig.update_layout(title="你的策略 vs 股價走勢", hovermode="x unified")
+                    fig.update_yaxes(title_text="總資產 ($)", secondary_y=False)
+                    fig.update_yaxes(title_text="股價 ($)", secondary_y=True)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 交易明細
+                    with st.expander("📝 查看詳細交易紀錄 (Trade Log)"):
+                        st.dataframe(pd.DataFrame(trade_log))
+
+        except Exception as e:
+            st.error(f"回測發生錯誤: {e}")
