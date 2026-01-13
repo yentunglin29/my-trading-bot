@@ -628,8 +628,11 @@ elif page_mode == "⚡ 實戰策略 (Strategy)":
     st.subheader("1️⃣ 尋找標的 (Screening)")
     col_scr1, col_scr2, col_scr3 = st.columns([1, 1, 1])
     with col_scr1:
-        # 預設一些波動大的標的
-        scan_symbol = st.selectbox("標的股票", ["AMD", "PLTR", "MARA", "COIN", "TSLA", "NVDA"], index=0)
+        # 優先使用你的監控清單。如果清單被刪光了，才用預設的避免報錯。
+        my_options = st.session_state.watchlist if st.session_state.watchlist else ["AMD", "PLTR", "MARA", "COIN", "TSLA", "NVDA"]
+        
+        # 下拉選單現在會顯示你的清單內容
+        scan_symbol = st.selectbox("標的股票 (從監控清單)", my_options, index=0)
     with col_scr2:
         price_min = st.number_input("最小價格 ($)", value=2.00, step=0.1)
     with col_scr3:
