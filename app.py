@@ -1060,7 +1060,8 @@ elif page_mode == "🧪 回測實驗室 (Backtest)":
     # 標的與時間
     bc1, bc2 = st.columns(2)
     with bc1:
-        backtest_symbol = st.selectbox("回測標的", ["NVDA", "TSLA", "PLTR", "AMD", "AAPL", "SPY", "QQQ"], index=0)
+        backtest_symbol = st.session_state.watchlist if st.session_state.watchlist else ["AMD", "PLTR", "MARA", "COIN", "TSLA", "NVDA"]
+        # backtest_symbol = st.selectbox("回測標的", ["NVDA", "TSLA", "PLTR", "AMD", "AAPL", "SPY", "QQQ"], index=0)
     with bc2:
         initial_capital = st.number_input("初始資金 ($)", value=10000, step=1000)
 
