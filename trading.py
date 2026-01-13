@@ -100,3 +100,37 @@ def get_signal(df, symbol=None):
     if last['SMA20'] > last['SMA200']: return "Buy", "success"
     elif last['SMA20'] < last['SMA200']: return "Sell", "error"
     else: return "Wait", "warning"
+
+def get_orders_history(api, status='all', limit=50):
+    """獲取歷史訂單紀錄"""
+    try:
+        # 獲取最近的訂單
+        orders = api.list_orders(status=status, limit=limit, nested=True)
+        data = []
+        for o in orders:
+            # 轉換時間格式
+            created_at = o.created_at.strftime('%Y-%m-%d %H:%M') if hasattr(o, 'created_at') else ''
+            filled_at = o.filled_at.strftime('%Y-%m-%d %H:%M') if o.filled_at else '-'
+            
+            data.append({
+                "時間 (提交)": created_at,
+                "時間 (成交)": filled_at,
+                "代碼": o.symbol,
+                "方向": "🟢 買入" if o.side == 'buy' else "🔴 賣出",
+                "數量": int(o.qty) if o.qty else 0,
+                "成交均價": float(o.filled_avg_price) if o.filled_avg_price else 0.0,
+                "狀態": o.status,
+                "類型": o.type,
+                "ID": o.id
+            })
+        return pd.DataFrame(data)
+    except Exception as e:
+        return pd.DataFrame()
+
+def cancel_order(api, order_id):
+    """取消特定訂單"""
+    try:
+        api.cancel_order(order_id)
+        return True
+    except:
+        return False

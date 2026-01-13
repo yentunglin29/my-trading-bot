@@ -77,8 +77,15 @@ with st.sidebar:
     st.markdown("---")
     
     # --- 🔥 頁面導航模式 ---
+    # 修改 app.py 裡的導航選項
     st.header("🧭 導航模式")
-    page_mode = st.radio("請選擇功能：", ["📈 股票戰情室 (Dashboard)", "💰 期權策略 (Options)", "💼 我的資產 (Portfolio)"], index=0)
+    page_mode = st.radio("請選擇功能：", [
+        "📈 股票戰情室 (Dashboard)", 
+        "💰 期權策略 (Options)", 
+        "⚡ 實戰策略 (Strategy)",
+        "💼 我的資產 (Portfolio)",
+        "📝 交易紀錄 (Log)"
+    ], index=0)
 
     # --- 監控清單 ---
     st.markdown("---")
@@ -601,3 +608,212 @@ elif page_mode == "💼 我的資產 (Portfolio)":
 
     except Exception as e:
         st.error(f"讀取帳戶資料失敗: {e}")
+
+# ========================================================
+# 實戰策略 (Strategy) - 篩選與自動單
+# ========================================================
+elif page_mode == "⚡ 實戰策略 (Strategy)":
+    st.title("⚡ 1/13 翻倍戰術 (Screen & Trade)")
+    st.markdown("""
+    **策略流程**：
+    1. **篩選 (Screening)**：尋找 Ask Price 在 **$2.00 - $2.40** 的合約。
+    2. **進場 (Entry)**：市價買入 **2** 張。
+    3. **佈局 (Setup)**：成交後，自動掛出 **1 張翻倍賣單 (Limit Sell)** 保本。
+    """)
+    
+    api = trading.get_api()
+    
+    # --- 步驟 1: 篩選器 ---
+    st.subheader("1️⃣ 尋找標的 (Screening)")
+    col_scr1, col_scr2, col_scr3 = st.columns([1, 1, 1])
+    with col_scr1:
+        # 預設一些波動大的標的
+        scan_symbol = st.selectbox("標的股票", ["AMD", "PLTR", "MARA", "COIN", "TSLA", "NVDA"], index=0)
+    with col_scr2:
+        price_min = st.number_input("最小價格 ($)", value=2.00, step=0.1)
+    with col_scr3:
+        price_max = st.number_input("最大價格 ($)", value=2.40, step=0.1)
+
+    if st.button("🔍 掃描符合條件的期權 (Scan Options)"):
+        with st.spinner(f"正在掃描 {scan_symbol} 的期權鏈... (資料來源: Yahoo Finance)"):
+            try:
+                tk = yf.Ticker(scan_symbol)
+                exps = tk.options
+                
+                # 為了示範，我們只掃描最近的兩個到期日，節省時間
+                scan_results = []
+                for date in exps[:2]: 
+                    opt = tk.option_chain(date)
+                    calls = opt.calls
+                    # 篩選條件：Ask 在區間內
+                    mask = (calls['ask'] >= price_min) & (calls['ask'] <= price_max)
+                    filtered = calls[mask].copy()
+                    
+                    for index, row in filtered.iterrows():
+                        scan_results.append({
+                            "到期日": date,
+                            "合約代碼": row['contractSymbol'],
+                            "行權價": row['strike'],
+                            "Ask (買入價)": row['ask'],
+                            "Bid (賣出價)": row['bid'],
+                            "成交量": row['volume'],
+                            "IV": row['impliedVolatility']
+                        })
+                
+                if scan_results:
+                    df_scan = pd.DataFrame(scan_results)
+                    # 存入 session state 供下一步使用
+                    st.session_state['scan_results'] = df_scan
+                    st.success(f"找到 {len(df_scan)} 個符合條件的合約！")
+                else:
+                    st.warning("在此價格區間內找不到合約，請嘗試調整價格或更換標的。")
+                    st.session_state['scan_results'] = pd.DataFrame()
+            except Exception as e:
+                st.error(f"掃描失敗: {e}")
+
+    # --- 步驟 2 & 3: 執行交易 ---
+    if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
+        st.divider()
+        st.subheader("2️⃣ 選擇並執行 (Execute)")
+        
+        df_scan = st.session_state['scan_results']
+        
+        # 讓使用者選擇其中一個合約
+        selected_idx = st.selectbox(
+            "請選擇要交易的合約：", 
+            df_scan.index, 
+            format_func=lambda i: f"{df_scan.iloc[i]['到期日']} | Strike ${df_scan.iloc[i]['行權價']} | Ask ${df_scan.iloc[i]['Ask (買入價)']}"
+        )
+        
+        target_contract = df_scan.iloc[selected_idx]
+        symbol_code = target_contract['合約代碼']
+        est_price = target_contract['Ask (買入價)']
+        
+        st.info(f"**準備交易**: 買入 **2** 張 `{symbol_code}` @ 約 ${est_price}")
+        
+        # 執行按鈕
+        if st.button("🚀 立即執行 (Buy 2 & Auto-Limit 1)", type="primary"):
+            status_box = st.empty()
+            progress = st.progress(0)
+            
+            try:
+                # 1. 下單買入
+                status_box.text("1/3 正在送出買單 (Buy 2)...")
+                progress.progress(30)
+                
+                # 市價單買入 (使用 Limit 稍微高一點確保成交，或直接 Market)
+                # 為了模擬真實，這裡用 Market
+                buy_order = api.submit_order(
+                    symbol=symbol_code,
+                    qty=2,
+                    side='buy',
+                    type='market',
+                    time_in_force='day'
+                )
+                
+                # 2. 等待成交 (簡單的輪詢)
+                status_box.text(f"2/3 等待成交... (Order ID: {buy_order.id})")
+                time.sleep(2) 
+                
+                # 嘗試獲取成交價 (模擬環境通常很快，真實環境可能要等更久)
+                # 這裡我們做一個簡單的重試
+                filled_price = est_price # 預設值
+                for _ in range(5):
+                    o = api.get_order(buy_order.id)
+                    if o.status == 'filled':
+                        filled_price = float(o.filled_avg_price)
+                        break
+                    time.sleep(1)
+                
+                progress.progress(70)
+                
+                # 3. 掛出賣單 (Limit Sell 1 @ 2x)
+                target_sell_price = round(filled_price * 2.0, 2)
+                status_box.text(f"3/3 成交價 ${filled_price}。正在掛出保本賣單 @ ${target_sell_price}...")
+                
+                sell_order = api.submit_order(
+                    symbol=symbol_code,
+                    qty=1,              # 賣出一半
+                    side='sell',
+                    type='limit',
+                    limit_price=target_sell_price,
+                    time_in_force='gtc' # 永久有效
+                )
+                
+                progress.progress(100)
+                st.balloons()
+                st.success("✅ 策略執行成功！")
+                st.markdown(f"""
+                - **買入**: 2 張 @ ${filled_price}
+                - **自動掛單**: 賣出 1 張 @ ${target_sell_price} (訂單 ID: `{sell_order.id}`)
+                - **剩餘風險**: 還有 1 張未掛賣單，請留意止損。
+                """)
+                
+                # 關於止損的提示
+                st.warning("""
+                ⚠️ **關於止損 (-50%)**：
+                Alpaca 不允許對同一批持倉同時掛「限價止盈」和「市價止損」(OCO 訂單需特殊設置)。
+                
+                **建議操作**：
+                若總價值跌半 (例如現價跌至 ${:.2f})，請至 **「💼 我的資產」** 或 **「📝 交易紀錄」** 手動平倉剩餘部位。
+                """.format(filled_price * 0.5))
+                
+            except Exception as e:
+                st.error(f"執行失敗: {e}")
+                status_box.text("❌ 發生錯誤")
+
+
+# ========================================================
+# 交易紀錄 (Trade Log)
+# ========================================================
+elif page_mode == "📝 交易紀錄 (Log)":
+    st.title("📝 交易紀錄簿 (Trade Log)")
+    
+    api = trading.get_api()
+    
+    # 過濾器
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        log_filter = st.radio("顯示類別", ["全部 (All)", "已成交 (Filled)", "掛單中 (Open)"], horizontal=True)
+    with col2:
+        if st.button("🔄 刷新紀錄"):
+            st.rerun()
+            
+    status_map = {"全部 (All)": "all", "已成交 (Filled)": "closed", "掛單中 (Open)": "open"}
+    target_status = status_map[log_filter]
+    
+    # 獲取資料
+    with st.spinner("載入訂單資料中..."):
+        df_orders = trading.get_orders_history(api, status=target_status)
+    
+    if not df_orders.empty:
+        # 針對掛單中 (Open) 的訂單提供「取消」功能
+        if target_status == 'open' or log_filter == "全部 (All)":
+            st.info("💡 提示：勾選左側框框可選取，下方按鈕可取消掛單。")
+            
+            # 使用 DataEditor 讓使用者可以勾選 (Streamlit 新功能)
+            # 這裡簡單一點，直接顯示表格，後面加按鈕
+            
+            for index, row in df_orders.iterrows():
+                # 只對 Open 狀態顯示取消按鈕
+                if row['狀態'] in ['new', 'accepted', 'partially_filled', 'held']:
+                    c1, c2 = st.columns([5, 1])
+                    with c1:
+                        st.text(f"{row['時間 (提交)']} | {row['代碼']} | {row['方向']} {row['數量']} @ {row['類型']}")
+                    with c2:
+                        if st.button("❌ 取消", key=f"cancel_{row['ID']}"):
+                            if trading.cancel_order(api, row['ID']):
+                                st.success("已取消")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error("取消失敗")
+                    st.divider()
+                else:
+                    # 已成交或已取消的，顯示簡單列表
+                    st.caption(f"{row['時間 (提交)']} | {row['代碼']} | {row['方向']} {row['數量']} | 均價: ${row['成交均價']} | {row['狀態']}")
+        else:
+            # 純顯示表格
+            st.dataframe(df_orders, use_container_width=True, hide_index=True)
+    else:
+        st.info("📭 目前沒有相關的訂單紀錄。")
