@@ -819,7 +819,7 @@ elif page_mode == "📝 交易紀錄 (Log)":
         st.info("📭 目前沒有相關的訂單紀錄。")
 
 # ========================================================
-# 定時自動掛機 (Auto-Pilot) 
+# 定時自動掛機 (Auto-Pilot) - 含動態清單與資金管理
 # ========================================================
 elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
     st.title("⏰ 全自動掛機模式 (Sleep & Trade)")
@@ -839,22 +839,34 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
     # --- 1. 策略設定 (Configuration) ---
     st.subheader("1️⃣ 策略設定 (Setup)")
     
+    # 如果清單是空的，給一個預設值避免報錯
+    my_options = st.session_state.watchlist if st.session_state.watchlist else ["AMD", "PLTR"]
+    
     c1, c2, c3 = st.columns(3)
     with c1:
-        target_symbol = st.selectbox("目標股票", ["AMD", "PLTR", "MARA", "COIN", "TSLA", "NVDA"], index=0)
+        # 這裡現在會顯示你監控清單裡的股票了
+        target_symbol = st.selectbox("目標股票 (從監控清單)", my_options, index=0)
     with c2:
         # 設定觸發時間 (預設美東 9:45 AM = 加州 6:45 AM)
-        # 這裡讓使用者輸入 "HH:MM" (美東時間)
         target_time_str = st.text_input("執行時間 (美東 ET)", value="09:45")
     with c3:
         # 自動化判斷方向
         trend_filter = st.checkbox("✅ 只做多頭 (股價 > 開盤價)", value=True, help="防止開盤大跌還進場接刀")
 
-    c4, c5 = st.columns(2)
-    with c4:
-        min_ask = st.number_input("期權 Ask 最小價 ($)", value=2.00)
-    with c5:
-        max_ask = st.number_input("期權 Ask 最大價 ($)", value=2.40)
+    # --- 資金與價格設定 ---
+    st.write("---")
+    st.subheader("💰 資金管理 (Money Management)")
+    
+    cm1, cm2, cm3 = st.columns(3)
+    with cm1:
+        # 讓你自己決定要花多少錢
+        total_budget = st.number_input("本筆交易總預算 ($)", value=500, step=100)
+    with cm2:
+        min_ask = st.number_input("期權 Ask 最小價 ($)", value=1.50)
+    with cm3:
+        max_ask = st.number_input("期權 Ask 最大價 ($)", value=2.50)
+        
+    st.caption(f"💡 說明：程式會根據預算自動計算張數。例如預算 ${total_budget} 且期權價格 $2.00，程式會買入 {int(total_budget/200)} 張 (並自動調整為偶數以利分批出場)。")
 
     # --- 2. 啟動掛機 (Arm System) ---
     st.divider()
@@ -865,9 +877,8 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
         
         # 定義時區
         tz_et = pytz.timezone('US/Eastern')
-        tz_local = datetime.datetime.now().astimezone().tzinfo # 使用者當地時區
         
-        log_txt = "🚀 系統啟動... 正在等待時間到達。\n"
+        log_txt = f"🚀 系統啟動... 目標: {target_symbol} | 時間: {target_time_str} ET\n"
         log_placeholder.text_area("系統日誌", log_txt, height=200)
         
         # 循環檢測 (每 10 秒檢查一次)
@@ -876,7 +887,7 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
             current_time_str = now_et.strftime("%H:%M")
             
             # 顯示倒數狀態
-            status_placeholder.info(f"⏳ 現在美東時間: {now_et.strftime('%H:%M:%S')} | 目標: {target_time_str} | 監控中...")
+            status_placeholder.info(f"⏳ 現在美東時間: {now_et.strftime('%H:%M:%S')} | 等待觸發時間: {target_time_str} ...")
             
             # 檢查時間是否到達 (或超過一點點)
             if current_time_str >= target_time_str:
@@ -929,21 +940,38 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
                         status_placeholder.warning("找不到合約")
                         break
 
-                    # Step C: 下單買入 (Limit + Buffer)
+                    # Step C: 計算購買數量 (Money Management)
+                    cost_per_contract = est_price * 100
+                    qty_to_buy = int(total_budget // cost_per_contract)
+                    
+                    # 強制調整為偶數 (方便賣半)
+                    if qty_to_buy % 2 != 0:
+                        qty_to_buy -= 1
+                    
+                    if qty_to_buy < 2:
+                        log_txt += f"❌ 預算不足！${total_budget} 買不起 2 張 (單張成本 ${cost_per_contract})。\n"
+                        log_placeholder.text_area("系統日誌", log_txt, height=200)
+                        status_placeholder.error("預算不足")
+                        break
+                    
+                    qty_to_sell_half = int(qty_to_buy / 2)
+
+                    # Step D: 下單買入 (Limit + Buffer)
                     limit_buy = round(est_price + 0.05, 2)
-                    log_txt += f"🚀 送出買單: 2 張 @ ${limit_buy} (Limit)...\n"
+                    log_txt += f"🚀 資金運算：單價 ${est_price} | 買入 {qty_to_buy} 張\n"
+                    log_txt += f"🛒 送出買單: {qty_to_buy} 張 @ Limit ${limit_buy}...\n"
                     log_placeholder.text_area("系統日誌", log_txt, height=200)
                     
                     buy_order = api.submit_order(
                         symbol=found_contract,
-                        qty=2,
+                        qty=qty_to_buy,
                         side='buy',
                         type='limit',
                         limit_price=limit_buy,
                         time_in_force='day'
                     )
                     
-                    # Step D: 等待成交 (最多等 60 秒)
+                    # Step E: 等待成交 (最多等 60 秒)
                     log_txt += "⏳ 等待成交中...\n"
                     filled = False
                     filled_price = 0
@@ -959,20 +987,20 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
                     if filled:
                         log_txt += f"✅ 成交確認！均價 ${filled_price}\n"
                         
-                        # Step E: 掛翻倍賣單
+                        # Step F: 掛翻倍賣單
                         target_sell = round(filled_price * 2.0, 2)
-                        log_txt += f"🔒 掛出保本賣單: 1 張 @ ${target_sell} (GTC)...\n"
+                        log_txt += f"🔒 掛出保本賣單: {qty_to_sell_half} 張 @ ${target_sell} (GTC)...\n"
                         
                         api.submit_order(
                             symbol=found_contract,
-                            qty=1,
+                            qty=qty_to_sell_half,
                             side='sell',
                             type='limit',
                             limit_price=target_sell,
                             time_in_force='gtc'
                         )
-                        log_txt += "🎉 策略執行完畢！你可以繼續睡覺了。\n"
-                        status_placeholder.success(f"任務完成！買入 ${filled_price} / 賣單 ${target_sell}")
+                        log_txt += "🎉 策略執行完畢！您可以繼續睡覺了。\n"
+                        status_placeholder.success(f"任務完成！買入 {qty_to_buy} 張 / 賣單掛 {qty_to_sell_half} 張")
                         st.balloons()
                     else:
                         log_txt += "⚠️ 超時未成交，已取消訂單。\n"
