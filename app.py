@@ -819,7 +819,7 @@ elif page_mode == "📝 交易紀錄 (Log)":
         st.info("📭 目前沒有相關的訂單紀錄。")
 
 # ========================================================
-# 定時自動掛機 (Auto-Pilot) - 含動態清單與資金管理
+# 定時自動掛機 (Auto-Pilot) - V2 修正版 (修復夜間偷跑問題)
 # ========================================================
 elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
     st.title("⏰ 全自動掛機模式 (Sleep & Trade)")
@@ -836,22 +836,19 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
     
     api = trading.get_api()
 
-    # --- 1. 策略設定 (Configuration) ---
+    # --- 1. 策略設定 (Setup) ---
     st.subheader("1️⃣ 策略設定 (Setup)")
     
-    # 如果清單是空的，給一個預設值避免報錯
+    # 動態讀取 Watchlist
     my_options = st.session_state.watchlist if st.session_state.watchlist else ["AMD", "PLTR"]
     
     c1, c2, c3 = st.columns(3)
     with c1:
-        # 這裡現在會顯示你監控清單裡的股票了
         target_symbol = st.selectbox("目標股票 (從監控清單)", my_options, index=0)
     with c2:
-        # 設定觸發時間 (預設美東 9:45 AM = 加州 6:45 AM)
         target_time_str = st.text_input("執行時間 (美東 ET)", value="09:45")
     with c3:
-        # 自動化判斷方向
-        trend_filter = st.checkbox("✅ 只做多頭 (股價 > 開盤價)", value=True, help="防止開盤大跌還進場接刀")
+        trend_filter = st.checkbox("✅ 只做多頭 (股價 > 開盤價)", value=True)
 
     # --- 資金與價格設定 ---
     st.write("---")
@@ -859,14 +856,13 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
     
     cm1, cm2, cm3 = st.columns(3)
     with cm1:
-        # 讓你自己決定要花多少錢
         total_budget = st.number_input("本筆交易總預算 ($)", value=500, step=100)
     with cm2:
         min_ask = st.number_input("期權 Ask 最小價 ($)", value=1.50)
     with cm3:
         max_ask = st.number_input("期權 Ask 最大價 ($)", value=2.50)
         
-    st.caption(f"💡 說明：程式會根據預算自動計算張數。例如預算 ${total_budget} 且期權價格 $2.00，程式會買入 {int(total_budget/200)} 張 (並自動調整為偶數以利分批出場)。")
+    st.caption(f"💡 說明：程式會根據預算自動計算張數。例如預算 ${total_budget} 且期權價格 $2.00，程式會買入 {int(total_budget/200)} 張。")
 
     # --- 2. 啟動掛機 (Arm System) ---
     st.divider()
@@ -877,143 +873,152 @@ elif page_mode == "⏰ 定時自動掛機 (Auto-Pilot)":
         
         # 定義時區
         tz_et = pytz.timezone('US/Eastern')
+        now_et = datetime.datetime.now(tz_et)
         
-        log_txt = f"🚀 系統啟動... 目標: {target_symbol} | 時間: {target_time_str} ET\n"
-        log_placeholder.text_area("系統日誌", log_txt, height=200)
-        
-        # 循環檢測 (每 10 秒檢查一次)
-        while True:
-            now_et = datetime.datetime.now(tz_et)
-            current_time_str = now_et.strftime("%H:%M")
+        # ==========================================
+        # 🔥 V2 修正重點：智慧判斷日期
+        # ==========================================
+        try:
+            # 1. 解析你輸入的時間 (例如 09:45)
+            t_hour, t_minute = map(int, target_time_str.split(':'))
             
-            # 顯示倒數狀態
-            status_placeholder.info(f"⏳ 現在美東時間: {now_et.strftime('%H:%M:%S')} | 等待觸發時間: {target_time_str} ...")
+            # 2. 建立一個「今天 09:45」的時間物件
+            target_dt = now_et.replace(hour=t_hour, minute=t_minute, second=0, microsecond=0)
             
-            # 檢查時間是否到達 (或超過一點點)
-            if current_time_str >= target_time_str:
-                log_txt += f"✅ 時間到達 ({current_time_str})！開始執行策略...\n"
-                log_placeholder.text_area("系統日誌", log_txt, height=200)
+            # 3. 關鍵判斷：如果「現在」已經超過「今天 09:45」，那你的意思一定是「明天」
+            if now_et > target_dt:
+                target_dt += datetime.timedelta(days=1) # 加一天
                 
-                try:
-                    # Step A: 檢查大盤/個股方向 (自動化「觀察方向」)
-                    if trend_filter:
-                        # 獲取當日最新股價
-                        bar = api.get_latest_bar(target_symbol)
-                        current_stock_price = bar.c
-                        open_stock_price = bar.o # 開盤價
+            log_txt = f"🚀 系統啟動！目標鎖定：{target_symbol}\n"
+            log_txt += f"⏰ 預計執行時間：{target_dt.strftime('%Y-%m-%d %H:%M:%S')} (美東時間)\n"
+            log_txt += f"💤 目前進入待機模式，請勿關閉網頁...\n"
+            log_placeholder.text_area("系統日誌", log_txt, height=200)
+            
+            # 循環檢測
+            while True:
+                now = datetime.datetime.now(tz_et)
+                remaining = target_dt - now
+                
+                # 顯示漂亮的倒數計時
+                if remaining.total_seconds() > 0:
+                    status_placeholder.info(f"⏳ 倒數計時: {str(remaining).split('.')[0]} | 等待 {target_dt.strftime('%H:%M')} 開跑...")
+                else:
+                    # 時間到了！
+                    log_txt += f"\n✅ 時間到達 ({now.strftime('%H:%M:%S')})！開始執行策略...\n"
+                    log_placeholder.text_area("系統日誌", log_txt, height=200)
+                    status_placeholder.text("⚡ 正在執行中...")
+                    
+                    try:
+                        # [Step A] 檢查趨勢
+                        if trend_filter:
+                            bar = api.get_latest_bar(target_symbol)
+                            current_stock_price = bar.c
+                            open_stock_price = bar.o
+                            
+                            log_txt += f"🔍 檢查趨勢: 現價 ${current_stock_price} vs 開盤 ${open_stock_price}...\n"
+                            if current_stock_price < open_stock_price:
+                                log_txt += "❌ 趨勢不符 (股價下跌中)，取消交易。今日休息。\n"
+                                log_placeholder.text_area("系統日誌", log_txt, height=200)
+                                status_placeholder.error("⛔ 策略終止：趨勢下跌。")
+                                break
+                            else:
+                                log_txt += "✅ 趨勢符合 (多頭排列)！繼續執行...\n"
+                    
+                        # [Step B] 掃描期權
+                        log_txt += f"🔍 掃描 {target_symbol} 期權鏈 (Ask: ${min_ask}-${max_ask})...\n"
+                        log_placeholder.text_area("系統日誌", log_txt, height=200)
                         
-                        log_txt += f"🔍 檢查趨勢: 現價 ${current_stock_price} vs 開盤 ${open_stock_price}...\n"
-                        if current_stock_price < open_stock_price:
-                            log_txt += "❌ 趨勢不符 (股價下跌中)，取消交易。今日休息。\n"
+                        tk = yf.Ticker(target_symbol)
+                        exps = tk.options
+                        found_contract = None
+                        est_price = 0
+                        
+                        for date in exps[:2]:
+                            if found_contract: break
+                            opt = tk.option_chain(date)
+                            candidates = opt.calls[(opt.calls['ask'] >= min_ask) & (opt.calls['ask'] <= max_ask)]
+                            if not candidates.empty:
+                                best_row = candidates.sort_values('volume', ascending=False).iloc[0]
+                                found_contract = best_row['contractSymbol']
+                                est_price = best_row['ask']
+                                log_txt += f"✅ 找到合約: {found_contract} (Ask: ${est_price})\n"
+                        
+                        if not found_contract:
+                            log_txt += "❌ 找不到符合條件的合約。策略結束。\n"
                             log_placeholder.text_area("系統日誌", log_txt, height=200)
-                            status_placeholder.error("⛔ 策略終止：趨勢下跌。")
-                            break # 結束程式
-                        else:
-                            log_txt += "✅ 趨勢符合 (多頭排列)！繼續執行...\n"
-                
-                    # Step B: 掃描期權
-                    log_txt += f"🔍 掃描 {target_symbol} 期權鏈 (Ask: ${min_ask}-${max_ask})...\n"
-                    log_placeholder.text_area("系統日誌", log_txt, height=200)
-                    
-                    tk = yf.Ticker(target_symbol)
-                    # 掃描最近的到期日
-                    exps = tk.options
-                    found_contract = None
-                    est_price = 0
-                    
-                    for date in exps[:2]: # 只看最近兩週
-                        if found_contract: break
-                        opt = tk.option_chain(date)
-                        # 篩選 Call 且 Ask 在範圍內
-                        candidates = opt.calls[(opt.calls['ask'] >= min_ask) & (opt.calls['ask'] <= max_ask)]
-                        
-                        if not candidates.empty:
-                            # 選成交量最大的那一個 (流動性最好)
-                            best_row = candidates.sort_values('volume', ascending=False).iloc[0]
-                            found_contract = best_row['contractSymbol']
-                            est_price = best_row['ask']
-                            log_txt += f"✅ 找到合約: {found_contract} (Ask: ${est_price})\n"
-                    
-                    if not found_contract:
-                        log_txt += "❌ 找不到符合價格條件的合約。策略結束。\n"
-                        log_placeholder.text_area("系統日誌", log_txt, height=200)
-                        status_placeholder.warning("找不到合約")
-                        break
-
-                    # Step C: 計算購買數量 (Money Management)
-                    cost_per_contract = est_price * 100
-                    qty_to_buy = int(total_budget // cost_per_contract)
-                    
-                    # 強制調整為偶數 (方便賣半)
-                    if qty_to_buy % 2 != 0:
-                        qty_to_buy -= 1
-                    
-                    if qty_to_buy < 2:
-                        log_txt += f"❌ 預算不足！${total_budget} 買不起 2 張 (單張成本 ${cost_per_contract})。\n"
-                        log_placeholder.text_area("系統日誌", log_txt, height=200)
-                        status_placeholder.error("預算不足")
-                        break
-                    
-                    qty_to_sell_half = int(qty_to_buy / 2)
-
-                    # Step D: 下單買入 (Limit + Buffer)
-                    limit_buy = round(est_price + 0.05, 2)
-                    log_txt += f"🚀 資金運算：單價 ${est_price} | 買入 {qty_to_buy} 張\n"
-                    log_txt += f"🛒 送出買單: {qty_to_buy} 張 @ Limit ${limit_buy}...\n"
-                    log_placeholder.text_area("系統日誌", log_txt, height=200)
-                    
-                    buy_order = api.submit_order(
-                        symbol=found_contract,
-                        qty=qty_to_buy,
-                        side='buy',
-                        type='limit',
-                        limit_price=limit_buy,
-                        time_in_force='day'
-                    )
-                    
-                    # Step E: 等待成交 (最多等 60 秒)
-                    log_txt += "⏳ 等待成交中...\n"
-                    filled = False
-                    filled_price = 0
-                    
-                    for _ in range(12): # 12 * 5s = 60s
-                        time.sleep(5)
-                        o = api.get_order(buy_order.id)
-                        if o.status == 'filled':
-                            filled = True
-                            filled_price = float(o.filled_avg_price)
+                            status_placeholder.warning("找不到合約")
                             break
-                    
-                    if filled:
-                        log_txt += f"✅ 成交確認！均價 ${filled_price}\n"
-                        
-                        # Step F: 掛翻倍賣單
-                        target_sell = round(filled_price * 2.0, 2)
-                        log_txt += f"🔒 掛出保本賣單: {qty_to_sell_half} 張 @ ${target_sell} (GTC)...\n"
-                        
-                        api.submit_order(
-                            symbol=found_contract,
-                            qty=qty_to_sell_half,
-                            side='sell',
-                            type='limit',
-                            limit_price=target_sell,
-                            time_in_force='gtc'
-                        )
-                        log_txt += "🎉 策略執行完畢！您可以繼續睡覺了。\n"
-                        status_placeholder.success(f"任務完成！買入 {qty_to_buy} 張 / 賣單掛 {qty_to_sell_half} 張")
-                        st.balloons()
-                    else:
-                        log_txt += "⚠️ 超時未成交，已取消訂單。\n"
-                        api.cancel_order(buy_order.id)
-                        status_placeholder.warning("未成交")
-                    
-                    log_placeholder.text_area("系統日誌", log_txt, height=200)
-                    break # 任務結束跳出循環
 
-                except Exception as e:
-                    log_txt += f"❌ 發生錯誤: {e}\n"
-                    log_placeholder.text_area("系統日誌", log_txt, height=200)
-                    break
-            
-            # 沒到時間就休息 10 秒
-            time.sleep(10)
+                        # [Step C] 資金運算
+                        cost_per_contract = est_price * 100
+                        qty_to_buy = int(total_budget // cost_per_contract)
+                        if qty_to_buy % 2 != 0: qty_to_buy -= 1 # 偶數調整
+                        
+                        if qty_to_buy < 2:
+                            log_txt += f"❌ 預算不足買 2 張 (單張 ${cost_per_contract})。\n"
+                            log_placeholder.text_area("系統日誌", log_txt, height=200)
+                            status_placeholder.error("預算不足")
+                            break
+                        
+                        qty_to_sell_half = int(qty_to_buy / 2)
+
+                        # [Step D] 下單買入
+                        limit_buy = round(est_price + 0.05, 2)
+                        log_txt += f"🛒 送出買單: {qty_to_buy} 張 @ Limit ${limit_buy}...\n"
+                        log_placeholder.text_area("系統日誌", log_txt, height=200)
+                        
+                        buy_order = api.submit_order(
+                            symbol=found_contract,
+                            qty=qty_to_buy,
+                            side='buy',
+                            type='limit',
+                            limit_price=limit_buy,
+                            time_in_force='day'
+                        )
+                        
+                        # [Step E] 等待成交
+                        log_txt += "⏳ 等待成交中...\n"
+                        filled = False
+                        filled_price = 0
+                        
+                        for _ in range(12): # 等 60 秒
+                            time.sleep(5)
+                            o = api.get_order(buy_order.id)
+                            if o.status == 'filled':
+                                filled = True
+                                filled_price = float(o.filled_avg_price)
+                                break
+                        
+                        if filled:
+                            log_txt += f"✅ 成交確認！均價 ${filled_price}\n"
+                            target_sell = round(filled_price * 2.0, 2)
+                            log_txt += f"🔒 掛出保本賣單: {qty_to_sell_half} 張 @ ${target_sell} (GTC)...\n"
+                            
+                            api.submit_order(
+                                symbol=found_contract,
+                                qty=qty_to_sell_half,
+                                side='sell',
+                                type='limit',
+                                limit_price=target_sell,
+                                time_in_force='gtc'
+                            )
+                            log_txt += "🎉 策略執行完畢！早安！\n"
+                            status_placeholder.success(f"任務完成！買入 {qty_to_buy} 張 / 賣單掛 {qty_to_sell_half} 張")
+                            st.balloons()
+                        else:
+                            log_txt += "⚠️ 超時未成交，已取消訂單。\n"
+                            api.cancel_order(buy_order.id)
+                            status_placeholder.warning("未成交")
+                        
+                        log_placeholder.text_area("系統日誌", log_txt, height=200)
+                        break 
+
+                    except Exception as e:
+                        log_txt += f"❌ 發生錯誤: {e}\n"
+                        log_placeholder.text_area("系統日誌", log_txt, height=200)
+                        break
+                
+                time.sleep(1) # 每秒檢查一次
+
+        except Exception as e:
+            st.error(f"時間設定格式錯誤或系統異常: {e}")
