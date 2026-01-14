@@ -460,14 +460,18 @@ elif page_mode == "💰 期權策略 (Options)":
                         target_sell_price = limit_price * 2.0
                         
                         st.markdown("#### 💰 交易試算")
-                        cb1, cb2, cb3 = st.columns(3)
-                        cb1.metric("💸 預估成本", f"-${est_cost:.2f}")
+                        c1, c2, c3, c4 = st.columns(4)
+
+                        c1.metric("💸 總成本", f"-${est_cost:.2f}")
+
+                        c2.metric("🚀 獲利啟動點", f"${breakeven:.2f}", breakeven_msg)
+
                         if use_strategy:
-                            cb2.metric("🎯 翻倍賣出價", f"${target_sell_price:.2f}", "獲利 100%")
-                            cb3.metric("🛡️ 策略目標", "零成本持有", "先拿回本金")
+                            c3.metric("⚡ 翻倍賣出價", f"${target_sell_price:.2f}", "權利金 +100%")
+                            c4.metric("🛡️ 戰術結果", "零成本", "剩餘部位免費")
                         else:
-                            cb2.metric("📦 買入價格", f"${limit_price:.2f}")
-                            cb3.metric("⚖️ 損益平衡", "依市價變動")
+                            c3.metric("📦 買入權利金", f"${limit_price:.2f}")
+                            c4.metric("⚖️ 交易模式", "一般買入")
 
                         # === 執行按鈕 ===
                         btn_text = f"🚀 執行翻倍戰術 (Buy {qty})" if use_strategy else "🚀 送出普通訂單"
