@@ -611,7 +611,7 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             else:
                 st.info("目前沒有掛單。")
 
-        # 3. 持倉列表 (進階版：分流顯示 + 總成本統計)
+        # 3. 持倉列表 (終極版：分流 + 總成本 + 到期日解析)
         st.divider()
         st.subheader("📊 目前持倉 (Current Positions)")
         positions = api.list_positions()
@@ -621,11 +621,11 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             stock_data = []
             option_data = []
             
-            # 用於統計總資金 (Total Cost)
+            # 用於統計總資金
             total_stock_cost = 0.0
             total_option_cost = 0.0
             
-            # 下拉選單用的列表 (維持原功能)
+            # 下拉選單用的列表
             sell_options = []
             
             for p in positions:
@@ -633,54 +633,65 @@ elif page_mode == "💼 我的資產 (Portfolio)":
                 is_option = len(p.symbol) > 6 and any(c.isdigit() for c in p.symbol)
                 sell_options.append(f"{p.symbol}")
                 
-                # 取得數據
+                # 基本數據
                 qty = int(p.qty)
                 avg_price = float(p.avg_entry_price)
                 current_price = float(p.current_price)
                 pl_val = float(p.unrealized_pl)
                 pl_pct = float(p.unrealized_plpc) * 100
                 
-                # 嘗試取得官方計算的總成本 (Cost Basis)，如果沒有就自己算
-                # Alpaca API 通常有 cost_basis 欄位
+                # 計算總成本 (Cost Basis)
                 try:
                     total_cost = float(p.cost_basis)
                 except:
-                    # 如果 API 沒給，手動算 (期權記得 x100)
                     multiplier = 100 if is_option else 1
                     total_cost = qty * avg_price * multiplier
 
+                # 建立資料列
                 row = {
                     "代碼": p.symbol,
                     "數量": qty,
-                    "成本均價": avg_price,   # 單價
-                    "總成本": total_cost,    # 🔥 新增：實際投入金額
+                    "總成本": total_cost,
+                    "成本均價": avg_price,
                     "現價": current_price,
                     "損益 ($)": pl_val,
                     "報酬率 (%)": pl_pct
                 }
                 
-                # 分類與累加
+                # 分類處理
                 if is_option:
+                    # 🔥 解析期權到期日
+                    # OCC 格式特性：後綴固定 15 碼 (6碼日期 + 1碼類型 + 8碼價格)
+                    # 例如: ...230616C00400000 -> 倒數15-9碼是日期
+                    exp_date = "-"
+                    if len(p.symbol) >= 15:
+                        try:
+                            date_part = p.symbol[-15:-9] # 取得 YYMMDD
+                            # 轉成 20YY-MM-DD
+                            exp_date = f"20{date_part[:2]}-{date_part[2:4]}-{date_part[4:]}"
+                        except: pass
+                    
+                    row['到期日'] = exp_date
                     option_data.append(row)
                     total_option_cost += total_cost
                 else:
                     stock_data.append(row)
                     total_stock_cost += total_cost
             
-            # --- 顯示資金分佈摘要 (Dashboard) ---
+            # --- 資金分佈摘要 ---
             st.markdown("##### 💰 資金分佈 (Cost Allocation)")
             k1, k2 = st.columns(2)
             k1.metric("🏢 股票總投入", f"${total_stock_cost:,.2f}")
             k2.metric("🚀 期權總投入", f"${total_option_cost:,.2f}")
-            st.write("") # 空行
+            st.write("") 
 
-            # --- 定義表格顯示函式 ---
-            def show_position_table(data_list):
-                df = pd.DataFrame(data_list)
-                # 調整欄位順序，把總成本往前移
-                cols = ["代碼", "數量", "總成本", "成本均價", "現價", "損益 ($)", "報酬率 (%)"]
+            # --- 定義顯示樣式函式 ---
+            def show_table(data, cols):
+                df = pd.DataFrame(data)
+                # 確保欄位依照我們想要的順序
+                df = df[cols]
                 st.dataframe(
-                    df[cols].style.format({
+                    df.style.format({
                         "總成本": "${:,.2f}", 
                         "成本均價": "${:.2f}", 
                         "現價": "${:.2f}", 
@@ -694,13 +705,17 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             # --- A. 顯示股票持倉 ---
             if stock_data:
                 st.markdown("#### 🏢 股票 (Stocks)")
-                show_position_table(stock_data)
+                # 股票不需要顯示到期日
+                cols_stock = ["代碼", "數量", "總成本", "成本均價", "現價", "損益 ($)", "報酬率 (%)"]
+                show_table(stock_data, cols_stock)
 
             # --- B. 顯示期權持倉 ---
             if option_data:
                 if stock_data: st.divider()
                 st.markdown("#### 🚀 期權 (Options)")
-                show_position_table(option_data)
+                # 期權加入「到期日」欄位
+                cols_option = ["代碼", "到期日", "數量", "總成本", "成本均價", "現價", "損益 ($)", "報酬率 (%)"]
+                show_table(option_data, cols_option)
 
             # ==========================================
             # 🔥🔥🔥 4. 機器人：自動出場設定 (Auto Exit) 🔥🔥🔥
