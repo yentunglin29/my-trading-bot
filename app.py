@@ -611,67 +611,96 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             else:
                 st.info("目前沒有掛單。")
 
-# 3. 持倉列表 (修改版：分開顯示股票與期權)
+        # 3. 持倉列表 (進階版：分流顯示 + 總成本統計)
         st.divider()
         st.subheader("📊 目前持倉 (Current Positions)")
         positions = api.list_positions()
         
         if positions:
-            # 準備兩個清單分別存放
+            # 準備容器
             stock_data = []
             option_data = []
             
-            # 用來做下拉選單的列表 (維持原功能)
+            # 用於統計總資金 (Total Cost)
+            total_stock_cost = 0.0
+            total_option_cost = 0.0
+            
+            # 下拉選單用的列表 (維持原功能)
             sell_options = []
             
             for p in positions:
-                # 判斷是否為期權 (長度>6且包含數字)
+                # 判斷是否為期權
                 is_option = len(p.symbol) > 6 and any(c.isdigit() for c in p.symbol)
                 sell_options.append(f"{p.symbol}")
                 
-                # 建立顯示資料
+                # 取得數據
+                qty = int(p.qty)
+                avg_price = float(p.avg_entry_price)
+                current_price = float(p.current_price)
+                pl_val = float(p.unrealized_pl)
+                pl_pct = float(p.unrealized_plpc) * 100
+                
+                # 嘗試取得官方計算的總成本 (Cost Basis)，如果沒有就自己算
+                # Alpaca API 通常有 cost_basis 欄位
+                try:
+                    total_cost = float(p.cost_basis)
+                except:
+                    # 如果 API 沒給，手動算 (期權記得 x100)
+                    multiplier = 100 if is_option else 1
+                    total_cost = qty * avg_price * multiplier
+
                 row = {
                     "代碼": p.symbol,
-                    "數量": int(p.qty),
-                    "成本": float(p.avg_entry_price),
-                    "現價": float(p.current_price),
-                    "損益 ($)": float(p.unrealized_pl),
-                    "報酬率 (%)": float(p.unrealized_plpc) * 100
+                    "數量": qty,
+                    "成本均價": avg_price,   # 單價
+                    "總成本": total_cost,    # 🔥 新增：實際投入金額
+                    "現價": current_price,
+                    "損益 ($)": pl_val,
+                    "報酬率 (%)": pl_pct
                 }
                 
-                # 分類存入
+                # 分類與累加
                 if is_option:
                     option_data.append(row)
+                    total_option_cost += total_cost
                 else:
                     stock_data.append(row)
+                    total_stock_cost += total_cost
             
-            # --- 定義顯示表格樣式的函式 (避免重複寫程式碼) ---
+            # --- 顯示資金分佈摘要 (Dashboard) ---
+            st.markdown("##### 💰 資金分佈 (Cost Allocation)")
+            k1, k2 = st.columns(2)
+            k1.metric("🏢 股票總投入", f"${total_stock_cost:,.2f}")
+            k2.metric("🚀 期權總投入", f"${total_option_cost:,.2f}")
+            st.write("") # 空行
+
+            # --- 定義表格顯示函式 ---
             def show_position_table(data_list):
+                df = pd.DataFrame(data_list)
+                # 調整欄位順序，把總成本往前移
+                cols = ["代碼", "數量", "總成本", "成本均價", "現價", "損益 ($)", "報酬率 (%)"]
                 st.dataframe(
-                    pd.DataFrame(data_list).style.format({
-                        "成本": "${:.2f}", "現價": "${:.2f}", 
-                        "損益 ($)": "${:+.2f}", "報酬率 (%)": "{:+.2f}%"
+                    df[cols].style.format({
+                        "總成本": "${:,.2f}", 
+                        "成本均價": "${:.2f}", 
+                        "現價": "${:.2f}", 
+                        "損益 ($)": "${:+.2f}", 
+                        "報酬率 (%)": "{:+.2f}%"
                     }).applymap(lambda x: 'color: green' if x > 0 else 'color: red', subset=['損益 ($)', '報酬率 (%)']),
                     use_container_width=True,
-                    hide_index=True # 隱藏索引欄位比較美觀
+                    hide_index=True
                 )
 
             # --- A. 顯示股票持倉 ---
             if stock_data:
                 st.markdown("#### 🏢 股票 (Stocks)")
                 show_position_table(stock_data)
-            else:
-                # 如果沒有股票，也可以選擇不顯示或顯示提示
-                # st.caption("無股票持倉") 
-                pass
 
             # --- B. 顯示期權持倉 ---
             if option_data:
-                st.divider() # 加個分隔線區隔
-                st.markdown("#### 💰 期權 (Options)")
+                if stock_data: st.divider()
+                st.markdown("#### 🚀 期權 (Options)")
                 show_position_table(option_data)
-            else:
-                pass
 
             # ==========================================
             # 🔥🔥🔥 4. 機器人：自動出場設定 (Auto Exit) 🔥🔥🔥
