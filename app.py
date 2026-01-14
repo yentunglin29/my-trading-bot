@@ -611,99 +611,67 @@ elif page_mode == "💼 我的資產 (Portfolio)":
             else:
                 st.info("目前沒有掛單。")
 
-        # 3. 持倉列表
+        # 3. 持倉列表 (修改版：分開顯示股票與期權)
         st.divider()
         st.subheader("📊 目前持倉 (Current Positions)")
         positions = api.list_positions()
         
         if positions:
-            # 準備下拉選單的資料
+            # 準備兩個清單分別存放
+            stock_data = []
+            option_data = []
+            
+            # 用來做下拉選單的列表 (維持原功能)
             sell_options = []
             
-            pos_data = []
             for p in positions:
+                # 判斷是否為期權 (長度>6且包含數字)
                 is_option = len(p.symbol) > 6 and any(c.isdigit() for c in p.symbol)
                 sell_options.append(f"{p.symbol}")
                 
-                pos_data.append({
+                # 建立顯示資料
+                row = {
                     "代碼": p.symbol,
-                    "類型": "期權" if is_option else "股票",
                     "數量": int(p.qty),
                     "成本": float(p.avg_entry_price),
                     "現價": float(p.current_price),
                     "損益 ($)": float(p.unrealized_pl),
                     "報酬率 (%)": float(p.unrealized_plpc) * 100
-                })
+                }
+                
+                # 分類存入
+                if is_option:
+                    option_data.append(row)
+                else:
+                    stock_data.append(row)
             
-            st.dataframe(
-                pd.DataFrame(pos_data).style.format({
-                    "成本": "${:.2f}", "現價": "${:.2f}", 
-                    "損益 ($)": "${:+.2f}", "報酬率 (%)": "{:+.2f}%"
-                }).applymap(lambda x: 'color: green' if x > 0 else 'color: red', subset=['損益 ($)', '報酬率 (%)']),
-                use_container_width=True
-            )
-
-            # ==========================================
-            # 🔥🔥🔥 4. 機器人：自動出場設定 (Auto Exit) 🔥🔥🔥
-            # ==========================================
-            st.markdown("---")
-            st.subheader("🤖 自動停利設定 (Auto Take Profit)")
-            st.caption("設定好目標後，系統會送出單，達標自動賣出。")
-            
-            c1, c2, c3 = st.columns([2, 1, 1])
-            with c1:
-                target_symbol = st.selectbox("📦 選擇持倉", [p.symbol for p in positions])
-            
-            # 找出選中持倉的成本
-            target_pos = next(p for p in positions if p.symbol == target_symbol)
-            avg_cost = float(target_pos.avg_entry_price)
-            current_qty = int(target_pos.qty)
-
-            with c2:
-                # 選擇獲利目標 %
-                profit_target = st.select_slider(
-                    "🎯 獲利目標 (Take Profit)", 
-                    options=[10, 20, 30, 50, 100, 200], 
-                    value=30,
-                    format_func=lambda x: f"+{x}%"
+            # --- 定義顯示表格樣式的函式 (避免重複寫程式碼) ---
+            def show_position_table(data_list):
+                st.dataframe(
+                    pd.DataFrame(data_list).style.format({
+                        "成本": "${:.2f}", "現價": "${:.2f}", 
+                        "損益 ($)": "${:+.2f}", "報酬率 (%)": "{:+.2f}%"
+                    }).applymap(lambda x: 'color: green' if x > 0 else 'color: red', subset=['損益 ($)', '報酬率 (%)']),
+                    use_container_width=True,
+                    hide_index=True # 隱藏索引欄位比較美觀
                 )
-            
-            with c3:
-                qty_to_sell = st.number_input("賣出數量", min_value=1, max_value=current_qty, value=current_qty)
 
-            # 計算目標價格
-            target_price = avg_cost * (1 + profit_target/100)
-            
-            # 期權價格通常有最小跳動單位 (0.01 或 0.05)，這裡簡單取小數點兩位
-            target_price = round(target_price, 2)
-            
-            st.info(f"💡 策略邏輯：當 **{target_symbol}** 從成本 `${avg_cost:.2f}` 漲到 **`${target_price:.2f}`** (+{profit_target}%) 時，自動賣出 {qty_to_sell} 張。")
+            # --- A. 顯示股票持倉 ---
+            if stock_data:
+                st.markdown("#### 🏢 股票 (Stocks)")
+                show_position_table(stock_data)
+            else:
+                # 如果沒有股票，也可以選擇不顯示或顯示提示
+                # st.caption("無股票持倉") 
+                pass
 
-            if st.button(f"🚀 啟動自動停利 (Set & Forget)", type="primary"):
-                with st.spinner("設定中..."):
-                    try:
-                        # 這種單子會一直掛在 Alpaca 伺服器上，直到成交或你取消，不用開電腦
-                        api.submit_order(
-                            symbol=target_symbol,
-                            qty=qty_to_sell,
-                            side='sell',
-                            type='limit',
-                            limit_price=target_price,
-                            time_in_force='day'
-                        )
-                        st.success(f"✅ 設定成功！已掛出賣單 @ ${target_price:.2f}。")
-                        st.balloons()
-                        time.sleep(2)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ 設定失敗: {e}")
-                        st.caption("提示：如果該標的已有其他掛單，請先到上方『取消所有掛單』再重新設定。")
-
-        else:
-            st.info("📭 目前空手，無可設定的資產。")
-
-    except Exception as e:
-        st.error(f"讀取帳戶資料失敗: {e}")
+            # --- B. 顯示期權持倉 ---
+            if option_data:
+                st.divider() # 加個分隔線區隔
+                st.markdown("#### 💰 期權 (Options)")
+                show_position_table(option_data)
+            else:
+                pass
 
 
 # ========================================================
