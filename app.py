@@ -456,14 +456,30 @@ elif page_mode == "💰 期權策略 (Options)":
                                 qty = st.number_input("張數", min_value=1, value=1)
                         
                         # 損益試算
+                        # === 取得 strike price 以計算損益平衡 ===
+                        strike_price = selected_row['strike']
+                        
+                        # 計算損益平衡點 (Breakeven) - 這就是原本 "漲到多少就賺錢"
+                        # 判斷是 Call 還是 Put
+                        if target_direction == "CALL":
+                             breakeven = strike_price + limit_price
+                             breakeven_msg = f"股價需 > {breakeven:.2f}"
+                             icon = "📈"
+                        else: # PUT
+                             breakeven = strike_price - limit_price
+                             breakeven_msg = f"股價需 < {breakeven:.2f}"
+                             icon = "📉"
+
+                        # 損益試算數值
                         est_cost = limit_price * 100 * qty
                         target_sell_price = limit_price * 2.0
                         
                         st.markdown("#### 💰 交易試算")
                         c1, c2, c3, c4 = st.columns(4)
-
+                        
                         c1.metric("💸 總成本", f"-${est_cost:.2f}")
-
+                        
+                        # 這是您要找回來的：
                         c2.metric("🚀 獲利啟動點", f"${breakeven:.2f}", breakeven_msg)
 
                         if use_strategy:
