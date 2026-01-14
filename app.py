@@ -282,12 +282,13 @@ if page_mode == "📈 股票戰情室 (Dashboard)":
                 st.error(t('error_data'))
 
 # -----------------------------------------------
-# 🅱️ 模式二：期權策略 (Options)
+# 🆎 模式二：期權獵人 + 翻倍戰術 (Merged)
 # -----------------------------------------------
 elif page_mode == "💰 期權策略 (Options)":
-    st.title("💰 期權獵人 (Options Hunter)")
-    st.caption("根據技術指標提供 Buy Call 或 Buy Put 建議 (資料來源: Yahoo Finance)")
+    st.title("💰 期權獵人 (附帶翻倍戰術)")
+    st.caption("結合趨勢分析、AI 履約價推薦，並支援「1/13 翻倍戰術」自動佈局。")
 
+    # --- 1. 標的與趨勢分析 ---
     target = st.selectbox("🎯 請選擇標的", st.session_state.watchlist)
     
     if target:
@@ -306,6 +307,7 @@ elif page_mode == "💰 期權策略 (Options)":
             col_s2.metric("長期趨勢", f"${sma200:.2f}")
             col_s3.metric("RSI", f"{rsi:.1f}")
 
+            # 策略信號判斷
             strategy_type = "WAIT"
             strategy_text = "觀望 (Wait)"
             reason = "趨勢不明顯"
@@ -342,10 +344,10 @@ elif page_mode == "💰 期權策略 (Options)":
 
             try:
                 tk = yf.Ticker(target)
-                _ = tk.info
                 exps = tk.options
                 
                 if exps:
+                    # --- 2. 智慧選擇到期日 ---
                     st.subheader("🗓️ 智慧選擇到期日")
                     from datetime import datetime
                     today = datetime.now().date()
@@ -370,6 +372,7 @@ elif page_mode == "💰 期權策略 (Options)":
                     selected_date = exps[selected_idx]
                     opt = tk.option_chain(selected_date)
                     
+                    # 根據策略信號自動選擇 Call 或 Put
                     if strategy_type == "CALL":
                         data = opt.calls
                         target_direction = "CALL"
@@ -378,9 +381,10 @@ elif page_mode == "💰 期權策略 (Options)":
                         target_direction = "PUT"
                     else:
                         data = opt.calls
-                        target_direction = "CALL"
+                        target_direction = "CALL" # 預設
 
-                    if not data.empty and strategy_type in ["CALL", "PUT"]:
+                    if not data.empty:
+                        # --- 3. AI 推薦履約價 ---
                         st.markdown("### 🤖 AI 推薦履約價")
                         data['diff'] = abs(data['strike'] - last_price)
                         atm_row = data.sort_values('diff').iloc[0]
@@ -400,7 +404,7 @@ elif page_mode == "💰 期權策略 (Options)":
                             with col:
                                 st.info(f"{icon} **{title}**")
                                 st.write(f"Strike: **${row['strike']}**")
-                                st.write(f"Price: **${row['lastPrice']:.2f}**")
+                                st.write(f"Ask: **${row['ask']:.2f}**") # 顯示 Ask 價格比較準確
                                 st.caption(f"{desc}")
                                 st.caption(f"Code: `{row['contractSymbol']}`")
 
@@ -408,61 +412,135 @@ elif page_mode == "💰 期權策略 (Options)":
                         show_card(c2, "均衡型 (ATM)", atm_row, "AI 推薦", "⚖️")
                         show_card(c3, "積極型 (OTM)", otm_row, "以小博大", "🚀")
                         default_contract = atm_row['contractSymbol']
-                    else:
-                        default_contract = None
-
-                    st.divider()
-                    
-                    with st.expander(f"查看 {selected_date} 完整報價表", expanded=True):
+                        
+                        # 準備下拉選單資料
                         strike_min = last_price * 0.85
                         strike_max = last_price * 1.15
                         filtered_data = data[(data['strike'] > strike_min) & (data['strike'] < strike_max)]
-                        st.dataframe(filtered_data[['contractSymbol', 'strike', 'lastPrice', 'bid', 'ask', 'volume', 'impliedVolatility']], height=300)
+                        
+                    else:
+                        default_contract = None
+                        st.warning("無資料")
 
                     st.divider()
 
-                    st.subheader("⚡ 快速下單 (Paper Trading)")
+                    # --- 4. 終極下單區 (結合實戰策略) ---
+                    st.subheader("⚡ 執行交易 (Execution)")
+                    
                     contract_list = filtered_data['contractSymbol'].tolist() if 'filtered_data' in locals() else []
                     default_idx = 0
                     if default_contract and default_contract in contract_list:
                         default_idx = contract_list.index(default_contract)
 
                     if contract_list:
+                        # 選擇合約
                         c1, c2 = st.columns([3, 1])
-                        with c1: target_contract = st.selectbox("📦 合約代碼", contract_list, index=default_idx)
-                        with c2: qty = st.number_input("張數", min_value=1, value=1)
+                        with c1: 
+                            target_contract = st.selectbox("📦 合約代碼", contract_list, index=default_idx)
                         
+                        # 取得選中合約的詳細資料
                         selected_row = filtered_data[filtered_data['contractSymbol'] == target_contract].iloc[0]
-                        limit_price = selected_row['lastPrice']
-                        strike_price = selected_row['strike']
+                        limit_price = selected_row['ask'] # 使用 Ask 作為買入價
+                        if limit_price == 0: limit_price = selected_row['lastPrice'] # 防呆
+
+                        # === 🔥 策略選擇開關 ===
+                        use_strategy = st.checkbox("🔥 啟用「1/13 翻倍戰術」 (買入後，自動掛出一半部位翻倍賣單)", value=False)
+                        
+                        with c2: 
+                            if use_strategy:
+                                # 如果啟用策略，數量必須是雙數，且至少為 2
+                                qty = st.number_input("張數 (自動調整為偶數)", min_value=2, value=2, step=2)
+                                if qty % 2 != 0: qty += 1
+                                st.caption(f"將會: 買 {qty} 張, 賣 {int(qty/2)} 張")
+                            else:
+                                qty = st.number_input("張數", min_value=1, value=1)
+                        
+                        # 損益試算
                         est_cost = limit_price * 100 * qty
+                        target_sell_price = limit_price * 2.0
                         
-                        is_call = "C" in target_contract.split(str(int(strike_price)))[0]
-                        if is_call:
-                            breakeven = strike_price + limit_price
-                            target_msg = f"漲破 ${breakeven:.2f}"
-                        else:
-                            breakeven = strike_price - limit_price
-                            target_msg = f"跌破 ${breakeven:.2f}"
-                            
-                        st.markdown("#### 💰 損益試算")
+                        st.markdown("#### 💰 交易試算")
                         cb1, cb2, cb3 = st.columns(3)
-                        cb1.metric("💸 總成本", f"-${est_cost:.2f}")
-                        cb2.metric("🎯 獲利啟動價", f"${breakeven:.2f}", target_msg)
-                        
-                        if st.button("🚀 送出訂單", type="primary"):
-                            with st.spinner("下單中..."):
-                                res = trading.execute_order(api, target_contract, 'buy', qty=qty, price=limit_price)
-                                if "成功" in res or "已掛單" in res:
-                                    st.success(res)
-                                    st.balloons()
+                        cb1.metric("💸 預估成本", f"-${est_cost:.2f}")
+                        if use_strategy:
+                            cb2.metric("🎯 翻倍賣出價", f"${target_sell_price:.2f}", "獲利 100%")
+                            cb3.metric("🛡️ 策略目標", "零成本持有", "先拿回本金")
+                        else:
+                            cb2.metric("📦 買入價格", f"${limit_price:.2f}")
+                            cb3.metric("⚖️ 損益平衡", "依市價變動")
+
+                        # === 執行按鈕 ===
+                        btn_text = f"🚀 執行翻倍戰術 (Buy {qty})" if use_strategy else "🚀 送出普通訂單"
+                        if st.button(btn_text, type="primary"):
+                            progress = st.progress(0)
+                            status_box = st.empty()
+                            
+                            try:
+                                # 1. 送出買單 (Limit Buy)
+                                status_box.text(f"1/3 送出買單: {target_contract} x {qty} @ ${limit_price}...")
+                                progress.progress(20)
+                                
+                                buy_order = api.submit_order(
+                                    symbol=target_contract,
+                                    qty=qty,
+                                    side='buy',
+                                    type='limit',
+                                    limit_price=limit_price,
+                                    time_in_force='day'
+                                )
+                                progress.progress(50)
+                                
+                                if use_strategy:
+                                    # 2. 策略模式：等待成交並掛賣單
+                                    status_box.text(f"2/3 訂單已送出，等待成交以執行策略... (ID: {buy_order.id})")
+                                    
+                                    # 簡易輪詢等待成交 (最多等 10 秒，避免卡死)
+                                    filled = False
+                                    real_avg_price = limit_price
+                                    
+                                    for _ in range(10):
+                                        time.sleep(1)
+                                        o = api.get_order(buy_order.id)
+                                        if o.status == 'filled':
+                                            filled = True
+                                            real_avg_price = float(o.filled_avg_price)
+                                            break
+                                    
+                                    if filled:
+                                        progress.progress(80)
+                                        # 3. 掛出翻倍賣單
+                                        sell_qty = int(qty / 2)
+                                        sell_price = round(real_avg_price * 2.0, 2)
+                                        status_box.text(f"3/3 成交價 ${real_avg_price}。掛出保本賣單: {sell_qty}張 @ ${sell_price}...")
+                                        
+                                        api.submit_order(
+                                            symbol=target_contract,
+                                            qty=sell_qty,
+                                            side='sell',
+                                            type='limit',
+                                            limit_price=sell_price,
+                                            time_in_force='gtc' # 永久有效
+                                        )
+                                        progress.progress(100)
+                                        st.balloons()
+                                        st.success(f"✅ 戰術執行成功！\n買入均價: ${real_avg_price}\n已掛賣單: {sell_qty} 張 @ ${sell_price}")
+                                    else:
+                                        progress.progress(100)
+                                        st.warning(f"⚠️ 買單已送出但尚未成交 (狀態: {o.status})。請稍後至「我的資產」手動設定自動停利。")
                                 else:
-                                    st.error(res)
+                                    # 普通模式
+                                    progress.progress(100)
+                                    st.success(f"✅ 訂單已送出！ (狀態: {buy_order.status})")
+                                    st.balloons()
+
+                            except Exception as e:
+                                st.error(f"交易失敗: {e}")
+
                 else:
                     st.warning("Yahoo Finance 暫時無法提供數據。")
             except Exception as e:
                 st.error(f"Error: {e}")
-
+                
 # -----------------------------------------------
 # 🆎 模式三：我的資產 (Portfolio) - 含智慧自動賣出
 # -----------------------------------------------
