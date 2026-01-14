@@ -444,7 +444,7 @@ elif page_mode == "💰 期權策略 (Options)":
                         if limit_price == 0: limit_price = selected_row['lastPrice'] # 防呆
 
                         # === 🔥 策略選擇開關 ===
-                        use_strategy = st.checkbox("🔥 啟用「1/13 翻倍戰術」 (買入後，自動掛出一半部位翻倍賣單)", value=False)
+                        use_strategy = st.checkbox("🔥 啟用保底策略 (買入後，自動掛出一半部位翻倍賣單)", value=False)
                         
                         with c2: 
                             if use_strategy:
@@ -540,7 +540,7 @@ elif page_mode == "💰 期權策略 (Options)":
                     st.warning("Yahoo Finance 暫時無法提供數據。")
             except Exception as e:
                 st.error(f"Error: {e}")
-                
+
 # -----------------------------------------------
 # 🆎 模式三：我的資產 (Portfolio) - 含智慧自動賣出
 # -----------------------------------------------
